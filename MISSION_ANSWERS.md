@@ -133,6 +133,45 @@ docker compose -p k5-day14-docker down
 
 Kết quả: `config --services` in `qdrant`, `redis`, `agent`, `nginx`. `ps` cho thấy cả bốn container đang chạy; agent, Redis, Qdrant healthy. Qua Nginx, `/health` trả HTTP 200 và `/ask` với JSON hợp lệ trả HTTP 200. Đã dừng stack bằng cùng project name `k5-day14-docker`.
 
+## Part 3: Cloud Deployment (CP6)
+
+### Exercise 3.1: Railway
+
+Agent trong [06-lab-complete/](./06-lab-complete/) đã được deploy lên Railway project `VinUni Day14`, môi trường `production`. URL public: **https://vinuni-day14-production.up.railway.app**. Service agent và Redis cùng project đều `Online`; `REDIS_URL` của agent tham chiếu `${{Redis.REDIS_URL}}`, `AGENT_API_KEY` được đặt bằng biến môi trường, không ghi giá trị vào bài.
+
+```powershell
+railway status
+railway add --database redis
+railway status
+railway variable set 'REDIS_URL=${{Redis.REDIS_URL}}' 'ENVIRONMENT=production' --service 'VinUni Day14' --skip-deploys
+railway variable set AGENT_API_KEY --stdin --service 'VinUni Day14'
+railway domain --service 'VinUni Day14'
+railway domain status 084b2455-bb3e-4805-9b71-8e5a5a12a1bd --service 'VinUni Day14'
+railway status
+```
+
+Kết quả: `railway status` sau khi cấu hình cho thấy agent và Redis đều `Online`; `railway domain status` cho `ACTIVE`. API key được tạo ngẫu nhiên 32 byte, lưu trong file `.env` cục bộ đã được Git bỏ qua và truyền qua stdin; lệnh tạo chi tiết có trong [DEPLOYMENT.md](./DEPLOYMENT.md). Railway tự cấp `PORT`; Dockerfile lắng nghe `0.0.0.0` trên cổng đó.
+
+Kiểm tra HTTP bằng PowerShell trong `06-lab-complete/`; lệnh chỉ in mã trạng thái và không in key:
+
+```powershell
+$baseUrl = 'https://vinuni-day14-production.up.railway.app'; $body = @{question='Hello'} | ConvertTo-Json -Compress; $apiKey = (Get-Content -LiteralPath '.env' -Raw).Substring('AGENT_API_KEY='.Length)
+"health=$(curl.exe -sS -o NUL -w '%{http_code}' "$baseUrl/health")"
+"ready=$(curl.exe -sS -o NUL -w '%{http_code}' "$baseUrl/ready")"
+"ask_without_key=$($body | curl.exe -sS -o NUL -w '%{http_code}' -X POST "$baseUrl/ask" -H 'Content-Type: application/json' --data-binary '@-')"
+"ask_with_key=$($body | curl.exe -sS -o NUL -w '%{http_code}' -X POST "$baseUrl/ask" -H 'Content-Type: application/json' -H "X-API-Key: $apiKey" --data-binary '@-')"
+```
+
+Output thực tế: `health=200`, `ready=200`, `ask_without_key=401`, `ask_with_key=200`. JSON gửi qua stdin để tránh lỗi escape trong PowerShell. [DEPLOYMENT.md](./DEPLOYMENT.md) ghi toàn bộ thông tin và lệnh; ảnh chụp dashboard, service và kết quả test cần lưu trong [screenshot](./screenshots).
+
+### Exercise 3.2: So sánh Railway và Render
+
+[railway.toml](./06-lab-complete/railway.toml) hiện cấu hình build bằng Dockerfile và healthcheck `/health`; Redis và secrets được tạo/đặt riêng trong Railway, không khai báo trong file này. [render.yaml](./06-lab-complete/render.yaml) hiện chỉ là TODO, nên chưa thể dùng trực tiếp để deploy bản Part 6 lên Render. Mẫu [render.yaml](./03-cloud-deployment/render/render.yaml) cho thấy Render Blueprint có thể khai báo web service, Redis, build/start command, healthcheck, vùng triển khai và biến môi trường trong một file. Nếu chọn Render cho Part 6, cần viết Blueprint phù hợp cấu trúc `06-lab-complete/` và nối `REDIS_URL` với Redis của Render. Sự khác biệt thực tế trong bài này là cấu hình Railway ngắn hơn nhưng phần Redis và secrets phải thiết lập thêm trên platform; Blueprint Render có thể mô tả nhiều service cùng lúc.
+
+### Exercise 3.3: Đọc pipeline Cloud Run
+
+[cloudbuild.yaml](./03-cloud-deployment/production-cloud-run/cloudbuild.yaml) mô tả chuỗi `test → build Docker image → push image → deploy Cloud Run`; bước sau chờ bước trước thành công. Image được gắn tag `$COMMIT_SHA` và `latest`, rồi Cloud Run deploy tag theo commit để xác định phiên bản. [service.yaml](./03-cloud-deployment/production-cloud-run/service.yaml) mô tả cổng, CPU/RAM, giới hạn scale, health probes và secret lấy từ Secret Manager. Đây là phân tích file mẫu, chưa chạy Cloud Run; muốn deploy agent Part 6 cần điều chỉnh image và kết nối Redis cho cấu trúc ứng dụng này.
+
 ## Part 4: API Gateway & Security (CP3)
 
 ### Exercise 4.1: API key
@@ -320,9 +359,103 @@ Request mới trả HTTP 200 với `served_by=instance-65ead4`, `storage=redis`;
 docker compose -p k5-day14-scaling down
 ```
 
+## Part 6: Final Project (CP5)
+
+Đã hoàn thiện [06-lab-complete/](./06-lab-complete/): config từ environment, API key, health/readiness, rate limit trong Redis, daily cost guard, JSON log, graceful shutdown, Dockerfile multi-stage chạy non-root, Compose agent + Redis, `.dockerignore` và Railway config. `render.yaml` là phương án thay thế chưa cấu hình; CP5 chọn Railway config. `/health` độc lập với Redis, còn `/ready` trả 503 nếu Redis không kết nối được.
+
+### Lệnh chấm và số liệu
+
+Lệnh kiểm tra bản khung ban đầu, chạy trong `06-lab-complete/`:
+
+```powershell
+wsl -d Ubuntu-24.04 -- /usr/bin/python3 check_production_ready.py --static-only
+```
+
+Output ban đầu: `0/12`, `5/24 checks passed`. Sau khi sửa, lệnh kiểm tra tĩnh (ẩn Docker CLI Windows khỏi `PATH` để checker dùng bộ đọc Compose của Python):
+
+```powershell
+wsl -d Ubuntu-24.04 -- bash -lc 'PATH=/usr/bin:/bin /usr/bin/python3 check_production_ready.py --static-only'
+```
+
+Output: `26/26 checks passed`; các mục runtime/Docker vẫn chưa được kiểm tra trong chế độ này.
+
+Ubuntu hiện chưa bật Docker Desktop WSL integration. Lệnh `wsl -d Ubuntu-24.04 -- bash -lc 'command -v docker; docker version --format "{{.Server.Version}}"'` báo không có Docker CLI trong distro. Để script chấm chạy bằng Python Linux (kiểm được SIGTERM) và dùng Docker Desktop Windows, tôi tạo helper tạm `/tmp/day14-bin/docker`, đổi `/mnt/...` và build context `.` sang đường dẫn Windows bằng `wslpath -w`, rồi gọi `/mnt/c/Users/dell/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe`. Helper chỉ nằm trong `/tmp`, không commit vào repo. Lệnh `wsl -d Ubuntu-24.04 -- sleep 3600` giữ distro chạy để `/tmp` không bị reset trong lúc kiểm tra.
+
+Các lệnh chuẩn bị chạy trong `06-lab-complete/`:
+
+```powershell
+wsl -d Ubuntu-24.04 -- /usr/bin/python3 -m venv /tmp/day14-venv
+wsl -d Ubuntu-24.04 -- /tmp/day14-venv/bin/python -m pip install -r requirements.txt --quiet
+wsl -d Ubuntu-24.04 -- /tmp/day14-bin/docker info --format '{{.ServerVersion}}'
+```
+
+Lệnh cuối trả Docker server `29.9.3`. Helper được tạo bằng PowerShell: `$bridge` chứa shell script bên dưới, sau đó chạy `$bridge = $bridge.Replace("`r`n", "`n") + "`n"`, `$encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($bridge))`, `wsl -d Ubuntu-24.04 -- bash -c "echo $encoded | base64 -d > /tmp/day14-bin/docker"` và `wsl -d Ubuntu-24.04 -- chmod +x /tmp/day14-bin/docker`.
+
+```bash
+#!/usr/bin/env bash
+args=()
+for arg in "$@"; do
+  if [[ "$arg" == /mnt/* ]]; then
+    args+=("$(wslpath -w "$arg")")
+  elif [[ "$arg" == "." ]]; then
+    args+=("$(wslpath -w "$PWD")")
+  else
+    args+=("$arg")
+  fi
+done
+exec /mnt/c/Users/dell/AppData/Local/Programs/DockerDesktop/resources/bin/docker.exe "${args[@]}"
+```
+
+**Lệnh chấm đầy đủ**, chạy trong `06-lab-complete/`:
+
+```powershell
+wsl -d Ubuntu-24.04 -- env PATH=/tmp/day14-bin:/usr/bin:/bin /tmp/day14-venv/bin/python check_production_ready.py
+```
+
+Output: **`PASS 12/12 — PRODUCTION READY!`**, **`41/41 checks passed`**. Image được checker đo **238 MB** (script tính byte / 1024²), build trong **18 giây**. Checker đặt `RATE_LIMIT_PER_MINUTE=5` và thấy 429 sau **5** request thành công; sau restart vẫn 429. Thiếu/sai key trả 401, key đúng 200; `/ready` trả 503 khi Redis mất kết nối trong khi `/health` vẫn 200; budget rất nhỏ trả 402 ở request đầu; **12** dòng log app là JSON hợp lệ. SIGTERM lúc có request giữ request 200 và process exit code 0; `docker stop` exit code 0 trong **0,9 giây**. Mọi số liệu trong đoạn này đều từ lệnh checker đầy đủ trên.
+
+Phần `📋 Checklist Deliverable` từ output:
+
+```text
+✅ Dockerfile (multi-stage, < 500 MB)
+✅ docker-compose.yml (agent + redis)
+✅ .dockerignore
+✅ Health check endpoint (GET /health)
+✅ Readiness endpoint (GET /ready)
+✅ API Key authentication
+✅ Rate limiting
+✅ Cost guard
+✅ Config từ environment variables
+✅ Structured logging
+✅ Graceful shutdown
+✅ Public URL ready (Railway / Render config)
+```
+
+Kiểm tra Compose trực tiếp trong `06-lab-complete/` với key mẫu chỉ dùng local:
+
+```powershell
+$env:AGENT_API_KEY = 'lab-cp5-key'
+try {
+  docker compose -p k5-day14-final up -d --build --wait
+  docker compose -p k5-day14-final ps
+  curl.exe -sS -i 'http://localhost:8000/health'
+  curl.exe -sS -i 'http://localhost:8000/ready'
+  $json = @{question='What is deployment?'} | ConvertTo-Json -Compress
+  $json | curl.exe -sS -i -X POST 'http://localhost:8000/ask' -H 'Content-Type: application/json' -H 'X-API-Key: lab-cp5-key' --data-binary '@-'
+} finally {
+  docker compose -p k5-day14-final down
+  Remove-Item Env:AGENT_API_KEY
+}
+```
+
+Output: agent và Redis đều healthy; cả ba endpoint trả HTTP 200. `/ask` trả `cost_usd=2.01e-05` cho câu hỏi mẫu. Stack đã được dọn bằng `down`.
+
+Giới hạn cần nhớ: cost guard mẫu kiểm tra số tiền đã dùng trước request rồi mới ghi chi phí sau khi trả lời, nên nhiều request đồng thời vẫn có thể vượt nhẹ ngân sách. `PASS 12/12` xác nhận hợp đồng chấm của lab; cloud deployment và cấu hình Redis/secret trên nền tảng sẽ thực hiện ở CP6.
+
 ## AI log
 
 - CP0–CP1: AI hỗ trợ đọc yêu cầu, so sánh hai bản agent, chạy kiểm tra và soạn câu trả lời Part 1. Đã đối chiếu code, mã HTTP và server log.
 - CP2: AI hỗ trợ đọc Dockerfile/Compose, ghi câu trả lời Part 2.
 - CP3: AI hỗ trợ đọc luồng xác thực và giới hạn, ghi lại lệnh cùng HTTP response thực tế, và giải thích cost guard.
 - CP4: AI hỗ trợ đọc health/readiness và Redis/Nginx, kiểm tra stateless sau khi dừng một agent.
+- CP5: AI hỗ trợ hoàn thiện agent Part 6, chạy checker tĩnh và đầy đủ trong WSL2, kiểm tra Compose và ghi lại lệnh cùng số liệu thực tế.
