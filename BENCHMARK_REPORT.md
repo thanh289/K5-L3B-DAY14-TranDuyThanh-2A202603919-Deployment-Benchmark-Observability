@@ -65,6 +65,10 @@ Các hàng chạy cùng 300 request, concurrency 20 và `MOCK_ERROR_RATE=0`; ngu
 
 ## 3. Benchmark chất lượng (develop, `eval/run_eval.py`)
 
+Hai agent V1 và V2 chạy cùng [`app.py`](./06-lab-complete/benchmark-observability/develop/app.py), không có hai bộ mã riêng. Lệnh chạy đặt `AGENT_VERSION=v1` hoặc `AGENT_VERSION=v2` (xem bên dưới). Trong endpoint `/ask`, v1 bỏ bước tìm tài liệu và tạo câu trả lời mock mặc định; v2 gọi `search_knowledge_base()` để lấy ngữ cảnh từ [`utils/mock_llm.py`](./06-lab-complete/benchmark-observability/develop/utils/mock_llm.py) rồi mới tạo câu trả lời. Đây là mô phỏng RAG bằng so khớp từ khóa.
+
+V2 sau sửa giữ nguyên `AGENT_VERSION=v2`, thêm hai mục về Kubernetes HPA và JWT vào `KNOWLEDGE_BASE` trong [`utils/mock_llm.py`](./06-lab-complete/benchmark-observability/develop/utils/mock_llm.py), khởi động lại agent v2 và chạy lại eval. 
+
 | Chỉ số | Agent v1 | Agent v2 | Agent v2 (sau khi sửa KB) |
 |---|---|---|---|
 | Accuracy | 4,35% (1/23) | 91,30% (21/23) | 100% (23/23) |
