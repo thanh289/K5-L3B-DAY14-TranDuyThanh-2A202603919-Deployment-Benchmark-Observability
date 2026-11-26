@@ -452,6 +452,10 @@ Output: agent và Redis đều healthy; cả ba endpoint trả HTTP 200. `/ask` 
 
 Giới hạn cần nhớ: cost guard mẫu kiểm tra số tiền đã dùng trước request rồi mới ghi chi phí sau khi trả lời, nên nhiều request đồng thời vẫn có thể vượt nhẹ ngân sách. `PASS 12/12` xác nhận hợp đồng chấm của lab; cloud deployment và cấu hình Redis/secret trên nền tảng sẽ thực hiện ở CP6.
 
+## Part 7: Benchmark & Observability — CP7
+
+Đã chạy benchmark **local** cho agent develop v1/v2 và điền [BENCHMARK_REPORT.md](./BENCHMARK_REPORT.md). Report ghi môi trường, ngưỡng SLO, bảng 4 mức concurrency, 3 mức `MOCK_SLOW_RATE`, eval v1/v2/v2 sau sửa, lệnh chính xác tạo từng file JSON, giải thích p95/p99 và cost trên mỗi câu đúng. Mười file kết quả ở [develop/reports/](./06-lab-complete/benchmark-observability/develop/reports/) và job [eval.yml](./.github/workflows/eval.yml). Lệnh cuối `eval/run_eval.py --url http://localhost:8002 --min-accuracy 1.0 --baseline reports/eval_v2.json --out reports/eval_v2_fixed.json` trả exit code 0, `23/23`, không regression; chi tiết lệnh chạy và các lần SLO FAIL có trong báo cáo. CP8 (Grafana, Jaeger, Prometheus alerts, Locust scaling) chưa đo.
+
 ## AI log
 
 - CP0–CP1: AI hỗ trợ đọc yêu cầu, so sánh hai bản agent, chạy kiểm tra và soạn câu trả lời Part 1. Đã đối chiếu code, mã HTTP và server log.
@@ -459,3 +463,5 @@ Giới hạn cần nhớ: cost guard mẫu kiểm tra số tiền đã dùng tr�
 - CP3: AI hỗ trợ đọc luồng xác thực và giới hạn, ghi lại lệnh cùng HTTP response thực tế, và giải thích cost guard.
 - CP4: AI hỗ trợ đọc health/readiness và Redis/Nginx, kiểm tra stateless sau khi dừng một agent.
 - CP5: AI hỗ trợ hoàn thiện agent Part 6, chạy checker tĩnh và đầy đủ trong WSL2, kiểm tra Compose và ghi lại lệnh cùng số liệu thực tế.
+- CP6: AI thêm Redis và biến môi trường Railway, tạo domain.
+- CP7: AI sửa hai entry knowledge base, viết quality gate CI.
