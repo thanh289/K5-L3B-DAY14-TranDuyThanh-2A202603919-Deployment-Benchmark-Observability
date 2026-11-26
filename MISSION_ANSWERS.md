@@ -63,6 +63,77 @@ Kết quả: `/health` trả 200, `/ready` trả 200; request `/ask` hợp lệ 
 
 Lưu ý khi thử: `curl.exe -sS -i -X POST 'http://localhost:8000/ask' -H 'Content-Type: application/json' -d '{"question":"Hello"}'` chạy từ PowerShell đã gửi body sai định dạng, nhận 500. Server log ghi `JSONDecodeError`. Sau đó dùng `Invoke-RestMethod` với `ConvertTo-Json` như trên để gửi JSON hợp lệ. Bản production mẫu chưa xử lý JSON lỗi thành phản hồi 4xx.
 
-### AI log
+## Part 2: Docker
 
-- Hỏi AI: đọc yêu cầu CP0–CP1, hỗ trợ chạy kiểm tra và soạn câu trả lời Part 1.
+### Exercise 2.1: Dockerfile cơ bản
+
+Đọc [Dockerfile develop](./02-docker/develop/Dockerfile):
+
+1. Base image là `python:3.11`, bản Python đầy đủ.
+2. Working directory trong container là `/app` (`WORKDIR /app`).
+3. `COPY requirements.txt` đứng trước `COPY app.py` để Docker có thể tái dùng layer cài dependencies khi chỉ thay đổi source code. `pip install --no-cache-dir` không tắt Docker layer cache.
+4. `CMD` cung cấp lệnh mặc định và có thể được thay bằng command sau tên image trong `docker run`. `ENTRYPOINT` chỉ định executable chính; command truyền vào `docker run` thường trở thành đối số cho executable đó. Dockerfile này dùng `CMD ["python", "app.py"]`.
+
+### Exercise 2.2: Build và chạy container develop
+
+Chạy từ gốc repo (build context là `.` vì Dockerfile dùng đường dẫn `COPY` tính từ gốc):
+
+```text
+docker build -f 02-docker/develop/Dockerfile -t my-agent:develop .
+docker run -d --name day14-cp2-develop -p 8000:8000 my-agent:develop
+curl.exe -sS -i 'http://localhost:8000/health'
+curl.exe -sS -i -X POST 'http://localhost:8000/ask?question=What%20is%20Docker%3F'
+```
+
+Kết quả đo: build thành công; `/health` trả HTTP 200 và JSON `{"status":"ok",...}`; `/ask` trả HTTP 200, câu trả lời mock về container. Bản develop của Part 2 nhận `question` qua query string. Dọn container bằng `docker stop day14-cp2-develop` rồi `docker rm day14-cp2-develop` để nhường cổng 8000.
+
+### Exercise 2.3: Multi-stage và kích thước image
+
+Đọc [Dockerfile production](./02-docker/production/Dockerfile): `builder` cài GCC, `libpq-dev` và Python packages; `runtime` bắt đầu từ `python:3.11-slim`, chỉ copy Python packages và source cần chạy, dùng non-root user. Các công cụ build trong stage `builder` không nằm trong image cuối.
+
+Lệnh chạy từ gốc repo:
+
+```text
+docker build -f 02-docker/production/Dockerfile -t my-agent:advanced .
+docker image inspect my-agent:develop my-agent:advanced --format '{{index .RepoTags 0}} {{.Size}}'
+docker images my-agent
+```
+
+Số đo thực tế từ `docker image inspect`:
+
+| Image | Byte | MB (10^6 byte) |
+| --- | ---: | ---: |
+| `my-agent:develop` | 1,667,784,038 | 1,667.78 |
+| `my-agent:advanced` | 239,815,653 | 239.82 |
+
+Image advanced nhỏ hơn **85.62%**: `(1,667,784,038 − 239,815,653) / 1,667,784,038 × 100`. Lệnh `docker images my-agent` hiển thị xấp xỉ `1.67GB` và `240MB`. Đây là kích thước image đo được trên máy này, không phải dung lượng tải qua mạng.
+
+### Exercise 2.4: Docker Compose stack
+
+Đọc [docker-compose.yml](./02-docker/production/docker-compose.yml) và [nginx.conf](./02-docker/production/nginx/nginx.conf). Thư mục `production/` cần file `.env.local`; đã tạo file trống bằng `New-Item -ItemType File -Path '.env.local'` (file này được `.gitignore` bỏ qua, không chứa secret).
+
+```text
+Client → Nginx (:80) → agent (:8000)
+                         ├── REDIS_URL → redis (:6379)
+                         └── QDRANT_URL → qdrant (:6333)
+```
+
+Compose tạo một network nội bộ và hai volume cho Redis, Qdrant. `agent` đợi Redis và Qdrant healthy trước khi start. `REDIS_URL` và `QDRANT_URL` được cấu hình trong Compose; [main.py](./02-docker/production/main.py) của ví dụ này chưa thực sự gọi hai service đó. Nginx nhận request bên ngoài qua cổng 80 và proxy tới agent; Compose hiện chạy một instance agent mặc định.
+
+Chạy trong `02-docker/production/`:
+
+```text
+docker compose -p k5-day14-docker config --services
+docker compose -p k5-day14-docker up -d --build
+docker compose -p k5-day14-docker ps
+curl.exe -sS -i 'http://localhost/health'
+Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost/ask' -Method Post -ContentType 'application/json' -Body (@{question='Explain microservices'} | ConvertTo-Json -Compress) | Select-Object StatusCode,Content
+docker compose -p k5-day14-docker down
+```
+
+Kết quả: `config --services` in `qdrant`, `redis`, `agent`, `nginx`. `ps` cho thấy cả bốn container đang chạy; agent, Redis, Qdrant healthy. Qua Nginx, `/health` trả HTTP 200 và `/ask` với JSON hợp lệ trả HTTP 200. Đã dừng stack bằng cùng project name `k5-day14-docker`.
+
+## AI log
+
+- CP0–CP1: AI hỗ trợ đọc yêu cầu, so sánh hai bản agent, chạy kiểm tra và soạn câu trả lời Part 1. Đã đối chiếu code, mã HTTP và server log.
+- CP2: AI hỗ trợ đọc Dockerfile/Compose, ghi câu trả lời Part 2.
