@@ -234,8 +234,95 @@ request 12: HTTP/1.1 429 Too Many Requests
 
 Đề Exercise 4.4 còn nêu thiết kế $10/user/tháng với Redis. Cách làm: dùng key `budget:{user_id}:{YYYY-MM}`, kiểm tra `spent + estimated_cost <= 10` trước khi gọi LLM, reserve chi phí bằng thao tác Redis nguyên tử (Lua script hoặc transaction), rồi đối soát theo token thực tế; đặt TTL đến đầu tháng sau để reset. Phải xử lý đồng thời nhiều request để không vượt budget. Bản mẫu hiện tại chỉ kiểm tra chi phí **đã phát sinh**, sau đó mới ghi chi phí request mới nên một request có thể làm vượt ngưỡng. Ngoài ra trường `usage.budget_remaining_usd` trong `/ask` hiện chứa `usage.total_cost_usd` (chi phí đã dùng), không phải số còn lại; xem `/me/usage` nếu cần số còn lại đúng.
 
+## Part 5: Scaling & Reliability (CP4)
+
+### Exercise 5.1: Health và readiness
+
+Đọc [develop/app.py](./05-scaling-reliability/develop/app.py): `/health` là liveness, báo process còn hoạt động; `/ready` là readiness, chỉ nhận traffic sau khi khởi động xong và trả 503 khi `_is_ready=False`. Trong bản production, `/ready` còn thử `Redis PING` nếu đã kết nối Redis lúc startup. Liveness không nên phụ thuộc Redis để tránh restart process khỏe khi chỉ Redis gặp sự cố; readiness có thể trả 503 để ngừng nhận traffic.
+
+Lệnh chuẩn bị và chạy trong `05-scaling-reliability/develop/` (venv đặt trong WSL):
+
+```powershell
+wsl -d Ubuntu-24.04 -- /usr/bin/python3 -m venv /tmp/day14-venv
+wsl -d Ubuntu-24.04 -- /tmp/day14-venv/bin/python -m pip install -r requirements.txt --quiet
+wsl -d Ubuntu-24.04 -- /tmp/day14-venv/bin/python app.py
+```
+
+Lệnh kiểm tra từ gốc repo:
+
+```powershell
+curl.exe -sS -i 'http://localhost:8000/health'
+curl.exe -sS -i 'http://localhost:8000/ready'
+curl.exe -sS -i -X POST 'http://localhost:8000/ask?question=hello'
+```
+
+Kết quả: cả ba trả `HTTP/1.1 200 OK`. `/health` trả `status=ok`, `uptime_seconds=20.9`, `version=1.0.0`, `checks.memory.used_percent=10.9` tại thời điểm gọi; `/ready` trả `{"ready":true,"in_flight_requests":1}`; `/ask` trả câu trả lời mock. Các giá trị uptime và memory chỉ là snapshot của lần thử này.
+
+### Exercise 5.2: Graceful shutdown
+
+Code đặt `_is_ready=False` trong lifespan shutdown rồi chờ `_in_flight_requests` về 0, tối đa 30 giây. Tôi kiểm tra bằng hai request đồng thời và SIGTERM tới PID `402` (PID lấy từ log lúc khởi động):
+
+```powershell
+$job1 = Start-Job -ScriptBlock { curl.exe -sS -o NUL -w 'A HTTP %{http_code}' -X POST 'http://localhost:8000/ask?question=hello' }
+$job2 = Start-Job -ScriptBlock { curl.exe -sS -o NUL -w 'B HTTP %{http_code}' -X POST 'http://localhost:8000/ask?question=docker' }
+Start-Sleep -Milliseconds 500
+wsl -d Ubuntu-24.04 -- kill -TERM 402
+$job1,$job2 | Wait-Job | Receive-Job
+$job1,$job2 | Remove-Job
+```
+
+Kết quả thực tế: A nhận `HTTP 200`, B nhận `HTTP 000` và `curl: (52) Empty reply from server`. Log server có `Shutting down`, `Graceful shutdown initiated`, `Shutdown complete`, nhưng **không chứng minh được cả hai request đều hoàn thành**. Một nguyên nhân có thể là endpoint `async def` gọi `time.sleep(3)` đồng bộ trong [mock_llm.py](./05-scaling-reliability/develop/utils/mock_llm.py), chặn event loop; request thứ hai chưa xử lý xong khi server tắt. Cần dùng I/O bất đồng bộ hoặc đưa tác vụ đồng bộ sang thread và kiểm lại dưới tải trước khi coi đây là graceful shutdown đạt yêu cầu.
+
+### Exercise 5.3–5.5: Redis, load balancing, stateless
+
+Đọc [production/app.py](./05-scaling-reliability/production/app.py), [docker-compose.yml](./05-scaling-reliability/production/docker-compose.yml) và [nginx.conf](./05-scaling-reliability/production/nginx.conf): client vào Nginx cổng `8080`; Nginx chuyển tới 3 agent; các agent dùng chung Redis để lưu `session:{session_id}` với TTL 3600 giây. Nếu lưu history trong RAM, request sau đi tới instance khác sẽ không thấy lượt trước. Bản ví dụ có fallback sang RAM khi Redis không kết nối được lúc startup, nên chỉ kết luận stateless khi response báo `storage=redis`.
+
+Lệnh chạy trong `05-scaling-reliability/production/` (file `.env.local` rỗng, không có secret):
+
+```powershell
+New-Item -ItemType File -Path '.env.local' | Select-Object Name,Length
+docker compose -p k5-day14-scaling config --services
+docker compose -p k5-day14-scaling up -d --build --scale agent=3
+docker compose -p k5-day14-scaling ps
+```
+
+Kết quả: `config --services` cho `redis`, `agent`, `nginx`. `ps` cho thấy **3 agent healthy**, **Redis healthy** và Nginx mở `0.0.0.0:8080->80/tcp`. Kiểm tra qua Nginx:
+
+```powershell
+curl.exe -sS -i 'http://localhost:8080/health'
+curl.exe -sS -i 'http://localhost:8080/ready'
+```
+
+Cả hai trả HTTP 200; `/health` báo `storage=redis`, `redis_connected=true`. Hai response có `X-Served-By` khác nhau (`172.19.0.4:8000` và `172.19.0.5:8000`), cho thấy traffic qua các backend khác nhau.
+
+Lệnh test chạy trong `05-scaling-reliability/production/`:
+
+```powershell
+wsl -d Ubuntu-24.04 -- /usr/bin/python3 test_stateless.py
+```
+
+Output thực tế: 5 request cùng session `7f13dcd9-aa98-437b-b015-fe5b794457d9` lần lượt được phục vụ bởi `instance-59944c`, `instance-65ead4`, `instance-4b28ca`, `instance-59944c`, `instance-65ead4`. `Instances used` có đủ 3 ID; endpoint history trả **10 messages**, gồm 5 câu hỏi và 5 câu trả lời. Script chỉ kiểm tra session qua nhiều instance; nó **không tự tắt một instance**.
+
+Tôi thử thêm sau khi dừng agent 1. Lệnh `docker stop` chạy từ gốc repo; các lệnh còn lại cũng chạy từ gốc repo:
+
+```powershell
+docker stop k5-day14-scaling-agent-1
+$json = @{question='Continue after one agent stopped'; session_id='7f13dcd9-aa98-437b-b015-fe5b794457d9'} | ConvertTo-Json -Compress
+$json | curl.exe -sS -i -X POST 'http://localhost:8080/chat' -H 'Content-Type: application/json' --data-binary '@-'
+curl.exe -sS -i 'http://localhost:8080/chat/7f13dcd9-aa98-437b-b015-fe5b794457d9/history'
+```
+
+Request mới trả HTTP 200 với `served_by=instance-65ead4`, `storage=redis`; header `X-Served-By: 172.19.0.3:8000, 172.19.0.4:8000` cho thấy Nginx đã retry qua backend khác. History trả HTTP 200 và **12 messages** (6 cặp user/assistant), chứng minh session còn sau khi một agent dừng. Request này có độ trễ đáng kể lúc retry, nên khả năng chịu lỗi không đồng nghĩa phản hồi ngay. Một lỗi nhỏ ở bản mẫu: response này ghi `turn=7` mặc dù đó là câu hỏi thứ 6, do [chat](./05-scaling-reliability/production/app.py) cộng thêm 1 sau khi đã append câu hỏi vào history.
+
+Đã dọn stack bằng lệnh chạy trong `05-scaling-reliability/production/`:
+
+```powershell
+docker compose -p k5-day14-scaling down
+```
+
 ## AI log
 
 - CP0–CP1: AI hỗ trợ đọc yêu cầu, so sánh hai bản agent, chạy kiểm tra và soạn câu trả lời Part 1. Đã đối chiếu code, mã HTTP và server log.
 - CP2: AI hỗ trợ đọc Dockerfile/Compose, ghi câu trả lời Part 2.
 - CP3: AI hỗ trợ đọc luồng xác thực và giới hạn, ghi lại lệnh cùng HTTP response thực tế, và giải thích cost guard.
+- CP4: AI hỗ trợ đọc health/readiness và Redis/Nginx, kiểm tra stateless sau khi dừng một agent.
