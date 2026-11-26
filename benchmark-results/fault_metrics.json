@@ -1,0 +1,11 @@
+{
+    "timestamp_utc":  "2026-11-26T08:25:55Z",
+    "error_rate":  {
+                       "query":  "sum(rate(http_requests_total{job=\"agent\",route=\"/ask\",status=~\"5..\"}[1m])) / sum(rate(http_requests_total{job=\"agent\",route=\"/ask\"}[1m]))",
+                       "value":  "0.20072115384615383"
+                   },
+    "p95_seconds":  {
+                        "query":  "histogram_quantile(0.95,sum by(le)(rate(http_request_duration_seconds_bucket{job=\"agent\",route=\"/ask\"}[1m])))",
+                        "value":  "1.9037037037037035"
+                    }
+}

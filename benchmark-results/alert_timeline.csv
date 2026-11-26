@@ -1,0 +1,5 @@
+timestamp_utc,seconds_since_change,alert,state,active_at
+2026-11-26T08:23:50Z,29,AgentHighErrorRate,pending,2026-11-26T08:23:42.401817116Z
+2026-11-26T08:23:50Z,29,AgentHighLatencyP95,pending,2026-11-26T08:23:47.401817116Z
+2026-11-26T08:24:51Z,90.7,AgentHighErrorRate,firing,2026-11-26T08:23:42.401817116Z
+2026-11-26T08:25:52Z,151.4,AgentHighLatencyP95,firing,2026-11-26T08:23:47.401817116Z

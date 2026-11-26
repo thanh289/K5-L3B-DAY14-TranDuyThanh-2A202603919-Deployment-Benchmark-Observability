@@ -1,11 +1,11 @@
 # Benchmark & Observability Report — Day 14
 
-> CP7 đã đo trên máy local. Các mục observability và scaling production thuộc CP8, chưa đo.
-> Mọi con số dưới đây lấy từ các report JSON đã lưu, không ước lượng.
+> CP7 đo agent develop trên máy local; CP8 đo stack trong thư mục `production/` bằng Docker Desktop trên cùng máy. Chưa benchmark Railway.
+> Số liệu lấy từ report JSON/CSV hoặc Prometheus API đã lưu; mỗi phần ghi lệnh tạo/đọc kết quả.
 
 **Họ tên:** Trần Duy Thanh
 **Ngày chạy:** 26/11/2026
-**Môi trường:** Windows 11 Home Single Language, 8 logical CPU, 7,7 GB RAM; Python 3.13.2 trong `.venv-1`. Agent v1/v2 chạy local ở cổng 8001/8002; mock LLM nhỏ, `MOCK_ERROR_RATE=0` để tách lỗi ngẫu nhiên khỏi phép đo latency. Chưa chạy benchmark trên Railway.
+**Môi trường:** Windows 11 Home Single Language, 8 logical CPU, 7,7 GB RAM; Python 3.13.2 trong `.venv-1`. CP7: agent v1/v2 ở cổng 8001/8002, mock LLM nhỏ, `MOCK_ERROR_RATE=0`. CP8: Docker Desktop Engine 29.9.3, agent sau Nginx cổng 8080, mock LLM nhỏ; mặc định `MOCK_ERROR_RATE=0.01`, `MOCK_SLOW_RATE=0.03`. Chưa chạy benchmark trên Railway.
 
 Thông tin OS/CPU/RAM lấy bằng `Get-CimInstance Win32_OperatingSystem` và `Get-CimInstance Win32_Processor | Select-Object -First 1`; RAM = `TotalVisibleMemorySize / 1MB`. Phiên bản Python do `configurePythonEnvironment` trả về.
 
@@ -141,39 +141,101 @@ Script trả exit code 1 khi không đạt SLO/quality gate. Vì vậy các lầ
 
 ## 4. Observability stack (production)
 
+Đây là stack Docker Compose trong [production/](./06-lab-complete/benchmark-observability/production/), **không phải số liệu từ Railway**. Dockerfile ban đầu chép package vào sai thư mục home làm agent restart với `ModuleNotFoundError: uvicorn`; đã sửa [Dockerfile](./06-lab-complete/benchmark-observability/production/Dockerfile) sang `/app/.local`, build lại, rồi `/health` trả 200. Hai mục HPA/JWT cũng được đồng bộ sang [knowledge base production](./06-lab-complete/benchmark-observability/production/utils/mock_llm.py).
+
 ### 4.1 Screenshot
 
-- [ ] Dashboard Grafana khi đang có tải (thấy rõ Golden Signals)
-- [ ] Một trace chậm trong Jaeger (thấy span nào chiếm thời gian)
-- [ ] Một trace lỗi trong Jaeger (có event `exception`)
-- [ ] Trang Alerts của Prometheus với ít nhất 1 alert đang **firing**
+- [x] [Grafana dashboard khi có tải](./screenshots/grafana-dashboard.png): Traffic, Error rate, Latency p95, Saturation, Instances và Cost.
+- [x] [Jaeger trace chậm](./screenshots/jaeger-slow-trace.png): trace `fb4d8233e3ce7277a0306a088f78e723`.
+- [x] [Jaeger trace lỗi](./screenshots/jaeger-error-trace.png): trace `9b98675447761742b875038a3ae2f45a`, span LLM có event `exception` với lỗi upstream 503.
+- [x] [Prometheus Alerts](./screenshots/prometheus-alert-firing.png): cả `AgentHighErrorRate` và `AgentHighLatencyP95` cùng **firing**.
 
 ### 4.2 Thí nghiệm "phá hệ thống"
 
 | # | Thay đổi | Alert nào firing | Thời gian từ lúc đổi → firing | Panel nào phản ánh rõ nhất |
 |---|---|---|---|---|
-| A | `MOCK_ERROR_RATE=0.2` | | | |
-| B | `MOCK_SLOW_RATE=0.3` | | | |
-| C | `LLM_MODEL=mock-llm-large` | | | |
-| D | `docker pause` 1 instance | | | |
-| E | `AGENT_VERSION=v1` | | | |
+| A | `MOCK_ERROR_RATE=0.2` | `AgentHighErrorRate` | ~90,7 giây | Error rate: 20,07% tại mốc kiểm tra |
+| B | `MOCK_SLOW_RATE=0.3` | `AgentHighLatencyP95` | ~151,4 giây | Latency p95: 1.903,7 ms tại mốc kiểm tra |
+| C | `LLM_MODEL=mock-llm-large` | Chưa thực hiện | — | — |
+| D | `docker pause` 1 instance | Chưa thực hiện | — | — |
+| E | `AGENT_VERSION=v1` | Chưa thực hiện | — | — |
 
-**Thí nghiệm E không làm alert nào firing. Bạn sẽ phát hiện loại sự cố này trong production bằng cách nào?**
+Hai thay đổi A và B được áp dụng **cùng lúc** trong lúc Locust tạo 30 users. Mốc bắt đầu tính thời gian là **08:23:21 UTC**, khi lệnh `docker compose up` áp dụng cấu hình xong. Poll Prometheus mỗi 5 giây: A được quan sát firing lúc **08:24:51 UTC**, B lúc **08:25:52 UTC**. Sai số thời gian quan sát khoảng 5 giây cộng thời gian lệnh Compose chạy. [Timeline](./benchmark-results/alert_timeline.csv), [trạng thái firing tại 08:25:55 UTC](./benchmark-results/alerts_firing.json) và [metric Prometheus](./benchmark-results/fault_metrics.json) lưu bằng chứng. Trước khi tạo fault, test `promtool` cho alert rules báo `SUCCESS`.
 
-...
+**Thí nghiệm E không làm alert nào firing. Bạn sẽ phát hiện loại sự cố này trong production bằng cách nào?** Chạy eval định kỳ/canary với golden dataset và đặt quality gate cho accuracy cùng regression. Các metric hạ tầng không biết câu trả lời có đúng hay không; CP7 đã cho thấy v1 chỉ đúng 1/23 câu trong khi v2 sau sửa đúng 23/23.
 
 ### 4.3 Debug bằng trace
 
-Chọn 1 trace chậm nhất bạn tìm được:
+Trace chậm được chọn từ các dòng `llm_call` có `llm_ms` lớn nhất trong log agent đã quan sát:
 
-- `trace_id`: ...
-- Tổng thời gian: ... ms
-- Span chiếm nhiều thời gian nhất: ... (... ms, ...%)
-- Dòng log tương ứng (grep theo `trace_id`):
+- `trace_id`: `fb4d8233e3ce7277a0306a088f78e723`.
+- Tổng thời gian: **1.725,3 ms** theo log `http_request` (Jaeger làm tròn thành 1,7 s).
+- Span chiếm nhiều thời gian nhất: `chat mock-llm-small`, **1.698,7 ms**, khoảng **98,5%** tổng thời gian; `agent.retrieve_context` khoảng 20,4 ms.
+- Trace lỗi `9b98675447761742b875038a3ae2f45a` trả 503; Jaeger ghi `exception.message=Upstream LLM error: 503 Service Unavailable (mock)`.
+- Dòng log JSON có cùng `trace_id`:
 
 ```json
-
+{"ts": "2026-11-26T08:01:08.287763+00:00", "level": "INFO", "service": "observable-agent", "instance": "23764d6f4f67", "event": "llm_call", "trace_id": "fb4d8233e3ce7277a0306a088f78e723", "span_id": "630628f4a957b454", "request_id": "78295a207467", "model": "mock-llm-small", "agent_version": "v2", "input_tokens": 95, "output_tokens": 55, "cost_usd": 4.7e-05, "llm_ms": 1698.7}
+{"ts": "2026-11-26T08:01:08.288579+00:00", "level": "INFO", "service": "observable-agent", "instance": "23764d6f4f67", "event": "http_request", "trace_id": "fb4d8233e3ce7277a0306a088f78e723", "span_id": "630628f4a957b454", "request_id": "78295a207467", "method": "POST", "route": "/ask", "status": 200, "ms": 1725.3}
+{"ts": "2026-11-26T08:00:50.039701+00:00", "level": "INFO", "service": "observable-agent", "instance": "23764d6f4f67", "event": "llm_error", "trace_id": "9b98675447761742b875038a3ae2f45a", "span_id": "c545c10af1aa9131", "request_id": "5810105afa2b", "error": "Upstream LLM error: 503 Service Unavailable (mock)"}
 ```
+
+Các dòng trên được chép từ log gốc; lệnh tra log:
+
+```powershell
+docker compose -p k5-day14-observability logs --no-log-prefix agent 2>$null |
+  Select-String 'fb4d8233e3ce7277a0306a088f78e723|9b98675447761742b875038a3ae2f45a' |
+  Select-Object -First 8 | ForEach-Object { $_.Line }
+[math]::Round(1698.7 / 1725.3 * 100, 1)  # 98,5% thời gian của request
+```
+
+### 4.4 Lệnh chạy và truy vấn CP8
+
+Chạy trong `06-lab-complete/benchmark-observability/production/` bằng PowerShell:
+
+```powershell
+docker info --format '{{.ServerVersion}}'
+docker run --rm -v "${PWD}/prometheus:/p" --entrypoint promtool prom/prometheus:v3.16.0 test rules /p/alert_rules_test.yml
+docker compose -p k5-day14-observability up -d --build --scale agent=1
+docker compose -p k5-day14-observability ps --format 'table {{.Service}}\t{{.Name}}\t{{.State}}'
+curl.exe --noproxy '*' -sS -o NUL -w '%{http_code}\n' http://127.0.0.1:8080/health
+```
+
+Khi quan sát alert, tạo `.env` từ `.env.example` với `MOCK_ERROR_RATE=0.2` và `MOCK_SLOW_RATE=0.3`, rồi chạy:
+
+```powershell
+docker compose -p k5-day14-observability run --rm --no-deps locust -f /mnt/locust/locustfile.py --host http://nginx --headless -u 30 -r 5 -t 4m --csv /mnt/results/alerts_ab
+docker compose -p k5-day14-observability up -d --scale agent=3
+curl.exe --noproxy '*' -sS http://127.0.0.1:9090/api/v1/alerts
+```
+
+Lệnh đã dùng để truy vấn các metric tại 08:25:55 UTC và ghi [fault_metrics.json](./benchmark-results/fault_metrics.json):
+
+```powershell
+$t = [DateTimeOffset]::Parse('2026-11-26T08:25:55Z').ToUnixTimeSeconds()
+$exprs = @{
+  error_rate = 'sum(rate(http_requests_total{job="agent",route="/ask",status=~"5.."}[1m])) / sum(rate(http_requests_total{job="agent",route="/ask"}[1m]))'
+  p95_seconds = 'histogram_quantile(0.95,sum by(le)(rate(http_request_duration_seconds_bucket{job="agent",route="/ask"}[1m])))'
+}
+$out = [ordered]@{timestamp_utc='2026-11-26T08:25:55Z'}
+foreach ($k in $exprs.Keys) {
+  $q = [uri]::EscapeDataString($exprs[$k])
+  $j = curl.exe --noproxy '*' -sS "http://127.0.0.1:9090/api/v1/query?query=$q&time=$t" | ConvertFrom-Json
+  $out[$k] = [ordered]@{query=$exprs[$k]; value=$j.data.result[0].value[1]}
+}
+$out | ConvertTo-Json -Depth 5
+```
+
+Kiểm chứng hai alert cùng firing tại cùng mốc:
+
+```powershell
+$t = [DateTimeOffset]::Parse('2026-11-26T08:25:55Z').ToUnixTimeSeconds()
+$q = [uri]::EscapeDataString('ALERTS{alertstate="firing"}')
+curl.exe --noproxy '*' -sS -o benchmark-results/alerts_firing.json "http://127.0.0.1:9090/api/v1/query?query=$q&time=$t"
+Import-Csv benchmark-results/alert_timeline.csv | Where-Object state -eq 'firing' | Select-Object alert,seconds_since_change
+```
+
+Sau khi chụp ảnh và lưu kết quả, đã xóa `.env` fault injection và chạy lại `docker compose -p k5-day14-observability up -d --scale agent=3` để về cấu hình mặc định.
 
 ---
 
@@ -181,21 +243,34 @@ Chọn 1 trace chậm nhất bạn tìm được:
 
 | Số instance | RPS | p50 (ms) | p95 (ms) | p99 (ms) | Failures |
 |---|---|---|---|---|---|
-| 1 | | | | | |
-| 3 | | | | | |
+| 1 | 58,48 | 200 | 640 | 1.700 | 73/6.975 (1,05%) |
+| 3 | 57,12 | 200 | 1.300 | 1.900 | 61/6.785 (0,90%) |
 
 **Giải thích kết quả:** Scale có cải thiện p95 không? Nút thắt nằm ở đâu?
 
-...
+Không trong phép đo này: p95 tăng từ 640 lên 1.300 ms, còn RPS gần như không đổi. Ba agent có mặt và Prometheus scrape được cả ba target (`up{job="agent"}=1`); các instance đều nhận request. Trace chậm cho thấy mock LLM chiếm gần hết thời gian của một request, nhưng **chưa đủ bằng chứng để khẳng định** đây là nút thắt duy nhất khiến lần đo 3 instance chậm hơn. Cả ba container và Locust dùng chung máy 8 logical CPU/7,7 GB RAM, nên tranh chấp tài nguyên và biến động của mock slow cũng có thể ảnh hưởng. Cần lặp lại nhiều lượt và đo CPU/memory theo container để kết luận.
+
+Nguồn: [CSV 1 instance](./benchmark-results/scale_1_stats.csv), [CSV 3 instance](./benchmark-results/scale_3_stats.csv). RPS/p50/p95/p99 dùng riêng dòng `POST,/ask`, không dùng dòng `Aggregated` có cả `/health`. Lệnh tạo CSV (100 users, ramp 10/s, 2 phút mỗi lượt):
+
+```powershell
+docker compose -p k5-day14-observability up -d --scale agent=1
+docker compose -p k5-day14-observability run --rm --no-deps locust -f /mnt/locust/locustfile.py --host http://nginx --headless -u 100 -r 10 -t 2m --csv /mnt/results/scale_1
+docker compose -p k5-day14-observability up -d --scale agent=3
+docker compose -p k5-day14-observability run --rm --no-deps locust -f /mnt/locust/locustfile.py --host http://nginx --headless -u 100 -r 10 -t 2m --csv /mnt/results/scale_3
+Import-Csv benchmark-results/scale_1_stats.csv | Where-Object Name -eq '/ask'
+Import-Csv benchmark-results/scale_3_stats.csv | Where-Object Name -eq '/ask'
+[math]::Round(73 / 6975 * 100, 2)  # failure rate 1 instance: 1,05%
+[math]::Round(61 / 6785 * 100, 2)  # failure rate 3 instance: 0,90%
+```
+
+`--no-deps` là cần thiết: lượt thử đầu dùng `docker compose run locust` đã tự bật `agent-2` theo `replicas: 2` và bị hủy, sau đó đo lại đúng 1 instance. Locust kết thúc exit code 1 khi mock trả 503; các request lỗi đã được tính trong cột Failures.
 
 ---
 
 ## 6. Kết luận
 
-- 3 điều bạn học được về benchmark & observability:
-  1. ...
-  2. ...
-  3. ...
-- Nếu đưa agent này lên production thật, bạn sẽ thêm metric / alert nào nữa?
+1. Chỉ tăng số instance không bảo đảm p95 tốt hơn; cần kiểm tra phân bố tải và tài nguyên chia sẻ.
+2. Golden Signals chỉ ra có vấn đề, còn trace và log cùng `trace_id` xác định bước chậm/lỗi cụ thể.
+3. Alert có thời gian `for` giúp lọc spike ngắn; lỗi chất lượng trả lời cần eval riêng, vì có thể không tạo lỗi HTTP.
 
-...
+Nếu đưa agent lên production thật, nên thêm metric/error alert ở Nginx (502/504), CPU và memory mỗi container, tỷ lệ retrieval miss, cùng alert cho accuracy/regression từ eval định kỳ.

@@ -454,7 +454,11 @@ Giới hạn cần nhớ: cost guard mẫu kiểm tra số tiền đã dùng tr�
 
 ## Part 7: Benchmark & Observability — CP7
 
-Đã chạy benchmark **local** cho agent develop v1/v2 và điền [BENCHMARK_REPORT.md](./BENCHMARK_REPORT.md). Report ghi môi trường, ngưỡng SLO, bảng 4 mức concurrency, 3 mức `MOCK_SLOW_RATE`, eval v1/v2/v2 sau sửa, lệnh chính xác tạo từng file JSON, giải thích p95/p99 và cost trên mỗi câu đúng. Mười file kết quả ở [develop/reports/](./06-lab-complete/benchmark-observability/develop/reports/) và job [eval.yml](./.github/workflows/eval.yml). Lệnh cuối `eval/run_eval.py --url http://localhost:8002 --min-accuracy 1.0 --baseline reports/eval_v2.json --out reports/eval_v2_fixed.json` trả exit code 0, `23/23`, không regression; chi tiết lệnh chạy và các lần SLO FAIL có trong báo cáo. CP8 (Grafana, Jaeger, Prometheus alerts, Locust scaling) chưa đo.
+Đã chạy benchmark **local** cho agent develop v1/v2 và điền [BENCHMARK_REPORT.md](./BENCHMARK_REPORT.md). Report ghi môi trường, ngưỡng SLO, bảng 4 mức concurrency, 3 mức `MOCK_SLOW_RATE`, eval v1/v2/v2 sau sửa, lệnh chính xác tạo từng file JSON, giải thích p95/p99 và cost trên mỗi câu đúng. Mười file kết quả ở [develop/reports/](./06-lab-complete/benchmark-observability/develop/reports/) và job [eval.yml](./.github/workflows/eval.yml). Lệnh cuối `eval/run_eval.py --url http://localhost:8002 --min-accuracy 1.0 --baseline reports/eval_v2.json --out reports/eval_v2_fixed.json` trả exit code 0, `23/23`, không regression; chi tiết lệnh chạy và các lần SLO FAIL có trong báo cáo.
+
+## Part 7: Observability stack và benchmark scaling — CP8
+
+Đã chạy Docker Compose stack trên máy local, kiểm tra `promtool` báo `SUCCESS` và agent `/health` trả 200. Đã chụp đủ bốn ảnh Grafana, Jaeger trace chậm, Jaeger trace lỗi và Prometheus với **hai alert cùng firing** trong [screenshots/](./screenshots/). Hai alert được tạo bằng `MOCK_ERROR_RATE=0.2` và `MOCK_SLOW_RATE=0.3`; mốc firing và các câu PromQL lưu ở [benchmark-results/](./benchmark-results/). Locust headless đã đo 1 và 3 instance trong 2 phút mỗi lượt; kết quả của lần này là 58,48 so với 57,12 RPS, p95 640 so với 1.300 ms, nên scale không cải thiện p95. Lệnh chạy, file CSV nguồn, phân tích trace và giới hạn diễn giải nằm trong [BENCHMARK_REPORT.md](./BENCHMARK_REPORT.md). Fault injection đã được gỡ và stack trả về cấu hình mặc định.
 
 ## AI log
 
@@ -465,3 +469,4 @@ Giới hạn cần nhớ: cost guard mẫu kiểm tra số tiền đã dùng tr�
 - CP5: AI hỗ trợ hoàn thiện agent Part 6, chạy checker tĩnh và đầy đủ trong WSL2, kiểm tra Compose và ghi lại lệnh cùng số liệu thực tế.
 - CP6: AI thêm Redis và biến môi trường Railway, tạo domain.
 - CP7: AI sửa hai entry knowledge base, viết quality gate CI.
+- CP8: AI sửa Dockerfile của stack observability để agent khởi động được, chạy Locust/Prometheus/Jaeger.
